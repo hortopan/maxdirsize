@@ -56,19 +56,28 @@ fn main() {
     }
 }
 
+struct FolderInfo {
+    path: PathBuf,
+}
+
 struct FileInfo {
     path: PathBuf,
     size: u64,
     modified: u64,
 }
 
+enum ReadDirResultEntry {
+    Folder(FolderInfo),
+    File(FileInfo),
+}
+
 struct ReadDirResult {
-    files: Vec<FileInfo>,
+    entries: Vec<ReadDirResultEntry>,
     total_size: u64,
 }
 
 fn read_dir(path: &Path) -> std::io::Result<ReadDirResult> {
-    let mut files = Vec::new();
+    let mut entries = Vec::new();
     let mut total_size = 0;
 
     for entry in std::fs::read_dir(path)? {
@@ -79,8 +88,12 @@ fn read_dir(path: &Path) -> std::io::Result<ReadDirResult> {
 
         if let Ok(metadata) = metadata {
             if metadata.is_dir() {
+                entries.push(ReadDirResultEntry::Folder(FolderInfo {
+                    path: path.to_path_buf(),
+                }));
+
                 let mut items = read_dir(&path)?;
-                files.append(&mut items.files);
+                entries.append(&mut items.entries);
                 total_size += items.total_size;
             } else {
                 total_size += metadata.len();
@@ -89,11 +102,11 @@ fn read_dir(path: &Path) -> std::io::Result<ReadDirResult> {
                     Ok(val) => val,
                     Err(_) => metadata.created().expect("created timestamp not available"),
                 };
-                files.push(FileInfo {
+                entries.push(ReadDirResultEntry::File(FileInfo {
                     path,
                     size: metadata.len(),
                     modified: modified.duration_since(UNIX_EPOCH).unwrap().as_secs(),
-                });
+                }));
             }
         } else {
             error!(
@@ -107,13 +120,31 @@ fn read_dir(path: &Path) -> std::io::Result<ReadDirResult> {
         }
     }
 
-    Ok(ReadDirResult { files, total_size })
+    Ok(ReadDirResult {
+        entries,
+        total_size,
+    })
 }
 
 fn process(data: ReadDirResult, max_size_mb: u64, directory: &Path) {
     let mut parent_dirs_files_count = HashMap::new();
 
-    for file in &data.files {
+    let mut total_files = 0;
+
+    for file in &data.entries {
+        let file = match file {
+            ReadDirResultEntry::File(file) => {
+                total_files += 1;
+                file
+            }
+            ReadDirResultEntry::Folder(folder) => {
+                parent_dirs_files_count
+                    .entry(folder.path.clone())
+                    .or_insert(0);
+                continue;
+            }
+        };
+
         file.path.ancestors().skip(1).for_each(|component| {
             if !component.starts_with(directory) || component == directory {
                 return;
@@ -127,7 +158,6 @@ fn process(data: ReadDirResult, max_size_mb: u64, directory: &Path) {
     }
 
     let max_size_bytes = max_size_mb * 1024 * 1024;
-    let total_files = data.files.len();
     let mut total_size = data.total_size;
     let total_size_mb = total_size as f64 / 1024.0 / 1024.0;
 
@@ -151,8 +181,16 @@ fn process(data: ReadDirResult, max_size_mb: u64, directory: &Path) {
             .red()
         );
 
-    let mut sorted_files = data.files;
-    sorted_files.sort_by(|a, b| b.modified.cmp(&a.modified));
+    let sorted_files = data.entries;
+    let mut sorted_files: Vec<FileInfo> = sorted_files
+        .into_iter()
+        .filter_map(|item| match item {
+            ReadDirResultEntry::File(file) => Some(file),
+            _ => None,
+        })
+        .collect();
+
+    sorted_files.sort_by(|a, b| a.modified.cmp(&b.modified));
 
     while total_size > max_size_bytes {
         let file = sorted_files.pop();
@@ -169,9 +207,28 @@ fn process(data: ReadDirResult, max_size_mb: u64, directory: &Path) {
                 format!("Error removing file: {}, {e:?}", file.path.display()).red()
             );
         } else {
+            parent_dirs_files_count
+                .get_mut(file.path.parent().unwrap())
+                .map(|count| {
+                    *count -= 1;
+                });
+
             debug!("{}", format!("Removed file: {}", file.path.display()).red());
         }
 
         total_size = total_size - file.size;
     }
+
+    parent_dirs_files_count.iter().for_each(|(path, count)| {
+        if *count <= 0 {
+            if let Err(e) = std::fs::remove_dir(path) {
+                error!(
+                    "{}",
+                    format!("Error removing directory: {}, {e:?}", path.display()).red()
+                );
+            } else {
+                debug!("{}", format!("Removed directory: {}", path.display()).red());
+            }
+        }
+    });
 }

@@ -8,17 +8,29 @@ use std::time::{Duration, UNIX_EPOCH};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const APP_NAME: &str = env!("CARGO_PKG_NAME");
 
+fn default_margin() -> u8 {
+    85
+}
+
 #[derive(Deserialize)]
 struct Config {
     pub interval_seconds: u64,
     pub directory: String,
     pub max_size_mb: u64,
+    #[serde(default = "default_margin")]
+    pub margin: u8,
 }
 
 fn main() {
     env_logger::init();
 
     let config = envy::from_env::<Config>().unwrap();
+
+    if config.margin > 100 {
+        error!("MARGIN must be between 0 and 100");
+        std::process::exit(1);
+    }
+
     let directory = Path::new(&config.directory);
 
     println!(
@@ -42,8 +54,15 @@ fn main() {
             .green()
         );
 
-        match read_dir(directory) {
-            Ok(files) => process(files, config.max_size_mb, directory),
+        let data = read_dir(directory);
+
+        match data {
+            Ok(files) => process(
+                files,
+                config.max_size_mb,
+                directory,
+                config.margin as f32 / 100.0,
+            ),
             Err(e) => {
                 info!(
                     "{}",
@@ -126,7 +145,7 @@ fn read_dir(path: &Path) -> std::io::Result<ReadDirResult> {
     })
 }
 
-fn process(data: ReadDirResult, max_size_mb: u64, directory: &Path) {
+fn process(data: ReadDirResult, max_size_mb: u64, directory: &Path, margin: f32) {
     let mut parent_dirs_files_count = HashMap::new();
 
     let mut total_files = 0;
@@ -192,7 +211,9 @@ fn process(data: ReadDirResult, max_size_mb: u64, directory: &Path) {
 
     sorted_files.sort_by(|a, b| a.modified.cmp(&b.modified));
 
-    while total_size > max_size_bytes {
+    let margin = margin as f64 * max_size_bytes as f64;
+
+    while total_size > margin as u64 {
         let file = sorted_files.pop();
 
         if file.is_none() {

@@ -10,11 +10,12 @@ Written in Rust 🦀.
 export MAX_SIZE_MB=128
 export DIRECTORY=/folder-to-watch
 export INTERVAL_SECONDS=60
+export MARGIN=85
 export RUST_LOG=info/debug/error/warn
 ```
 
 ## Docker image available (arm64, amd64)
 
 ```
-docker pull hortopan/maxdirsize:0.0.1
+docker pull hortopan/maxdirsize:0.0.2
 ```
